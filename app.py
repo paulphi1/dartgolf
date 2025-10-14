@@ -257,7 +257,3 @@ else:
 
 st.caption("Made by @pauldartbrain • questforqschool.com")
 
-
-        st.session_state.last_wall=now_wall
-    time.sleep(0.15)
-    RERUN()
