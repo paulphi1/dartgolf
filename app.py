@@ -4,6 +4,8 @@
 # - Top-50 cut after Round 2
 # - 68 safe fake-bot names fallback
 # - Mobile-friendly
+# - Clear instructions + Start Tournament button
+# - Smart hints when auto is paused / it’s your turn
 
 import json
 import random
@@ -361,7 +363,8 @@ if "last_action" not in st.session_state: st.session_state.last_action=None
 st.sidebar.header("⛳ Setup")
 st.sidebar.text_input("Your name", value=st.session_state.user_name, key="user_name")
 st.sidebar.write("Your level"); st.sidebar.slider("", 1, 20, value=st.session_state.user_level, key="user_level")
-st.sidebar.checkbox("Auto-play my shots", value=st.session_state.auto_mode, key="auto_mode")
+st.sidebar.checkbox("Auto-play my shots", value=st.session_state.auto_mode, key="auto_mode",
+                    help="Tick = the game enters your score automatically. Untick = you’ll be asked to enter your score when it’s your turn.")
 st.sidebar.slider("Pairing size", 2, 4, value=st.session_state.pairing_size, key="pairing_size")
 st.sidebar.slider("Pace — seconds per hole (baseline)", 1.0, 15.0, value=st.session_state.pace_seconds, step=0.5, key="pace_seconds")
 st.sidebar.slider("Tee interval (seconds)", 0.0, 20.0, value=st.session_state.tee_interval, step=0.5, key="tee_interval")
@@ -370,7 +373,6 @@ st.sidebar.checkbox("Pause auto when it's my turn", value=True, key="pause_on_tu
 c1,c2=st.sidebar.columns(2)
 with c1:
     if st.button("Load players"):
-        # Always use built-in 68 bots at current slider level
         lvl = int(st.session_state.get("user_level", 12))
         st.session_state.bots_df = default_bots_df(level=max(1, min(20, lvl)))
         st.session_state.player_file_loaded=True
@@ -398,21 +400,43 @@ if save_up is not None:
 
 # Main
 st.title("⛳ Golf Darts — Course Mode (one pairing per hole)")
-st.caption("Manual mode never blocks a hole: your group waits **between holes** for your score. "
-           "Free holes are filled immediately. Leaderboard sorts by Score vs Par → Thru → Total Darts.")
+
+# --- Quick Start instructions (always visible) ---
+with st.expander("🧭 How to start / play (tap to open)", expanded=True):
+    st.markdown("""
+1. **Load players** (left sidebar) → this adds 68 bots + you.  
+2. **Start game** (left sidebar).  
+3. Choose how you want **your shots** handled:  
+   - **Auto-play my shots = ON** → the game enters your score automatically.  
+   - **Auto-play my shots = OFF** → when it’s your turn, you’ll get a box to **enter your darts**.  
+4. Press **Start Tournament (Auto)** below to let the round run automatically.  
+   You can pause or step time with the buttons anytime.  
+5. **Cut after Round 2:** Top 50 continue to Rounds 3 & 4.
+""")
+
+st.caption("Leaderboard sorts by Score vs Par → Thru → Total Darts. Free holes are filled immediately. "
+           "If the app shows 'waking up', that’s normal on free hosting.")
 
 top=st.columns(6)
 top[0].metric("Round", st.session_state.round_num)
 top[1].metric("Players", len(st.session_state.players))
 top[2].metric("Pairings", len(st.session_state.pairings) if st.session_state.pairings else 0)
-top[3].metric("Auto", "On" if st.session_state.auto_mode else "Off")
+top[3].metric("Auto", "On" if st.session_state.auto_running else "Off")
 top[4].metric("Pace base (s)", int(st.session_state.pace_seconds))
 top[5].metric("Tee gap (s)", int(st.session_state.tee_interval))
 st.divider()
 
+# --- Starter hints / big Start button ---
 if not st.session_state.start_ready:
-    st.info("Load players and press **Start game**.")
+    st.info("Load players and press **Start game** in the left sidebar.")
     st.stop()
+
+# If auto is off and it’s safe to start, show a big Start button
+if not st.session_state.get("auto_running", False) and st.session_state.get("pending_turn") is None:
+    if st.button("🚀 Start Tournament (Auto)", type="primary"):
+        st.session_state.auto_running = True
+        st.session_state.last_wall = time.time()
+        RERUN()
 
 left,right=st.columns([1.25,1])
 
@@ -427,13 +451,14 @@ with left:
 
     if st.session_state.get("pending_turn") is None:
         if recover_pending_turn_from_await():
-            st.info("It's your turn — restored the input card.")
+            st.info("It’s your turn — restored the input card.")
 
+    # If user wants to enter their own score, pause auto during input
     if st.session_state.get("pending_turn") is not None and st.session_state.get("pause_on_turn", True):
         if st.session_state.get("auto_running", False):
             st.session_state.auto_running = False
             st.session_state.resume_auto_after_turn = True
-            st.info("⏸️ Auto paused while you enter your score.")
+            st.warning("⏸️ Auto paused while you enter your score below.")
 
     # If everything is pre_tee and not moving, offer a tee-sheet kick
     needs_kick = False
@@ -442,15 +467,15 @@ with left:
         if statuses == {"pre_tee"}:
             needs_kick = True
     if needs_kick:
-        st.warning("Tee sheet is ready. Kick off Round start?")
+        st.info("Tee sheet is ready — press **Start Tournament (Auto)** above, or kick it here.")
         if st.button("🏁 Kick tee sheet"):
             tick_clock(st.session_state, 0.1)
             st.session_state.last_wall = time.time()
             RERUN()
 
-    # Resume auto if paused and no card to fill
+    # Offer resume if auto is paused and no card to fill
     if not st.session_state.get("auto_running", False) and st.session_state.get("pending_turn") is None:
-        st.warning("Auto is paused.")
+        st.warning("Auto is paused. Press **Start Tournament (Auto)** above, or Resume here.")
         if st.button("▶ Resume auto"):
             st.session_state.auto_running = True
             st.session_state.resume_auto_after_turn = False
@@ -469,7 +494,7 @@ with left:
     else:
         st.warning("Your pairing isn’t identified yet — start a new game or check your name.")
 
-    # Your turn card
+    # Your turn card (only when Auto-play my shots = OFF)
     if st.session_state.pending_turn is not None:
         need=st.session_state.pending_turn
         with st.form("your_turn"):
@@ -553,4 +578,5 @@ if (
         st.session_state.last_wall=now_wall
     time.sleep(0.15)
     RERUN()
+
 
